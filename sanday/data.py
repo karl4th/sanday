@@ -25,6 +25,7 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         split_seed: int = 42,
         train_ratio: float = 0.9,
         valid_ratio: float = 0.05,
+        max_items: int | None = None,
     ) -> None:
         self.root = Path(root)
         requested_manifest = Path(manifest)
@@ -40,6 +41,8 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         inferred_split = split or self._infer_split(requested_manifest)
         if requested_manifest.name != self.manifest_path.name and self.manifest_path.name == "validated.tsv":
             self.table = self._split_table(inferred_split, split_seed, train_ratio, valid_ratio)
+        if max_items is not None:
+            self.table = self.table.head(max_items).reset_index(drop=True)
         print(
             f"CommonVoiceDataset split={inferred_split} manifest={self.manifest_path} "
             f"rows={len(self.table)}"

@@ -39,7 +39,7 @@ class LogMelSpectrogram(torch.nn.Module):
         features = features.transpose(-1, -2)
         mean = features.mean(dim=1, keepdim=True)
         std = features.std(dim=1, keepdim=True).clamp_min(1e-5)
-        return (features - mean) / std
+        return ((features - mean) / std).clamp(-5.0, 5.0)
 
     def output_lengths(self, waveform_lengths: torch.Tensor) -> torch.Tensor:
         return torch.div(waveform_lengths, self.hop_length, rounding_mode="floor") + 1

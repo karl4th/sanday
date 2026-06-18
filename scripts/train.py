@@ -30,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--max-train-batches", type=int, default=None)
     parser.add_argument("--max-valid-batches", type=int, default=None)
+    parser.add_argument("--max-train-items", type=int, default=None)
+    parser.add_argument("--max-valid-items", type=int, default=None)
     return parser.parse_args()
 
 
@@ -133,6 +135,7 @@ def main() -> None:
         split_seed=config["project"].get("seed", 42),
         train_ratio=config["data"].get("train_ratio", 0.9),
         valid_ratio=config["data"].get("valid_ratio", 0.05),
+        max_items=args.max_train_items,
     )
     valid_dataset = CommonVoiceDataset(
         root=dataset_root,
@@ -145,6 +148,7 @@ def main() -> None:
         split_seed=config["project"].get("seed", 42),
         train_ratio=config["data"].get("train_ratio", 0.9),
         valid_ratio=config["data"].get("valid_ratio", 0.05),
+        max_items=args.max_valid_items,
     )
     generator = torch.Generator()
     generator.manual_seed(config["project"].get("seed", 42))
@@ -206,6 +210,14 @@ def main() -> None:
                 if augment is not None:
                     mel = augment(mel)
                 logits, output_lengths = model(mel, input_lengths)
+                if not torch.isfinite(logits).all():
+                    print(
+                        "Skipping batch: non-finite logits "
+                        f"finite_ratio={torch.isfinite(logits).float().mean().item():.4f} "
+                        f"min={torch.nan_to_num(logits.detach()).min().item():.4f} "
+                        f"max={torch.nan_to_num(logits.detach()).max().item():.4f}"
+                    )
+                    continue
                 keep_mask = output_lengths >= label_lengths
                 if not bool(keep_mask.any()):
                     print(
