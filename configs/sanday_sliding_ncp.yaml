@@ -35,7 +35,7 @@ vocab:
 model:
   variant: sliding_ncp
   window_frames: 32
-  window_stride: 8
+  window_stride: 4
   cnn_dim: 256
   hidden_dim: 256
   cfc_layers: 4

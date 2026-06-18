@@ -52,6 +52,18 @@ def decode_batch(model, features, vocab, waveforms, waveform_lengths, device):
     return [vocab.decode_ctc(ids[:length]) for ids, length in zip(token_ids, lengths)]
 
 
+def select_ctc_targets(
+    labels: torch.Tensor,
+    label_lengths: torch.Tensor,
+    keep_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    pieces = torch.split(labels, label_lengths.detach().cpu().tolist())
+    kept_pieces = [piece for piece, keep in zip(pieces, keep_mask.detach().cpu().tolist()) if keep]
+    if not kept_pieces:
+        return labels.new_empty((0,)), label_lengths.new_empty((0,))
+    return torch.cat(kept_pieces), label_lengths[keep_mask]
+
+
 def evaluate(model, feature_extractor, loader, vocab, device, max_batches: int | None = None) -> tuple[float, float]:
     from sanday.text import normalize_text
 
@@ -194,16 +206,40 @@ def main() -> None:
                 if augment is not None:
                     mel = augment(mel)
                 logits, output_lengths = model(mel, input_lengths)
-                log_probs = logits.log_softmax(dim=-1).transpose(0, 1)
+                keep_mask = output_lengths >= label_lengths
+                if not bool(keep_mask.any()):
+                    print(
+                        "Skipping batch: all CTC targets are longer than model outputs "
+                        f"output_lengths={output_lengths.detach().cpu().tolist()} "
+                        f"label_lengths={label_lengths.detach().cpu().tolist()}"
+                    )
+                    continue
+                if not bool(keep_mask.all()):
+                    logits = logits[keep_mask]
+                    output_lengths = output_lengths[keep_mask]
+                    labels, label_lengths = select_ctc_targets(labels, label_lengths, keep_mask)
+                log_probs = logits.float().log_softmax(dim=-1).transpose(0, 1)
                 loss = criterion(log_probs, labels, output_lengths, label_lengths)
+
+            if not torch.isfinite(loss):
+                print(
+                    "Skipping batch: non-finite CTC loss "
+                    f"loss={loss.item()} "
+                    f"output_lengths={output_lengths.detach().cpu().tolist()} "
+                    f"label_lengths={label_lengths.detach().cpu().tolist()}"
+                )
+                continue
 
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), config["training"]["grad_clip"])
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
-            if scheduler is not None:
+            scale_after = scaler.get_scale()
+            optimizer_step_was_skipped = scaler.is_enabled() and scale_after < scale_before
+            if scheduler is not None and not optimizer_step_was_skipped:
                 scheduler.step()
 
             train_loss_sum += float(loss.item())
