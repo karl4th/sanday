@@ -1,0 +1,9 @@
+torch
+torchaudio
+ncps
+kagglehub
+pandas
+jiwer
+pyyaml
+tqdm
+numpy
