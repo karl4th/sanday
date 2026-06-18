@@ -86,6 +86,15 @@ pip install torch torchaudio ncps kagglehub pandas jiwer pyyaml tqdm
 
 ## Training
 
+Recommended Colab entry point:
+
+```text
+notebooks/sanday_colab_experiment.ipynb
+```
+
+The notebook runs a short smoke test first, then launches the full training run
+and prints `error.log` automatically if a subprocess fails.
+
 ```bash
 python scripts/train.py --config configs/sanday_cfc_2m.yaml
 ```

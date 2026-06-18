@@ -37,6 +37,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Sanday CfC CTC ASR model")
     parser.add_argument("--config", default="configs/sanday_cfc_2m.yaml")
     parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--max-train-batches", type=int, default=None)
+    parser.add_argument("--max-valid-batches", type=int, default=None)
     return parser.parse_args()
 
 
@@ -57,12 +60,12 @@ def decode_batch(model, features, vocab, waveforms, waveform_lengths, device):
     return [vocab.decode_ctc(ids[:length]) for ids, length in zip(token_ids, lengths)]
 
 
-def evaluate(model, feature_extractor, loader, vocab, device) -> tuple[float, float]:
+def evaluate(model, feature_extractor, loader, vocab, device, max_batches: int | None = None) -> tuple[float, float]:
     model.eval()
     references: list[str] = []
     predictions: list[str] = []
     with torch.no_grad():
-        for batch in tqdm(loader, desc="valid", leave=False):
+        for batch_index, batch in enumerate(tqdm(loader, desc="valid", leave=False), start=1):
             predictions.extend(
                 decode_batch(
                     model,
@@ -74,6 +77,8 @@ def evaluate(model, feature_extractor, loader, vocab, device) -> tuple[float, fl
                 )
             )
             references.extend(normalize_text(text) for text in batch["texts"])
+            if max_batches is not None and batch_index >= max_batches:
+                break
     model.train()
     return wer(references, predictions), cer(references, predictions)
 
@@ -153,11 +158,12 @@ def main() -> None:
         weight_decay=config["training"]["weight_decay"],
     )
     scheduler = None
+    epochs = args.epochs or config["training"]["epochs"]
     if config["training"].get("scheduler") == "onecycle":
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=config["training"]["learning_rate"],
-            epochs=config["training"]["epochs"],
+            epochs=epochs,
             steps_per_epoch=len(train_loader),
             pct_start=config["training"].get("pct_start", 0.1),
         )
@@ -170,7 +176,7 @@ def main() -> None:
     best_epoch = 0
     started_at = time.time()
     model.train()
-    for epoch in range(config["training"]["epochs"]):
+    for epoch in range(epochs):
         epoch_started_at = time.time()
         progress = tqdm(train_loader, desc=f"epoch {epoch + 1}")
         train_loss_sum = 0.0
@@ -202,8 +208,10 @@ def main() -> None:
             train_loss_sum += float(loss.item())
             train_steps += 1
             progress.set_postfix(loss=f"{loss.item():.4f}")
+            if args.max_train_batches is not None and step >= args.max_train_batches:
+                break
 
-        valid_wer, valid_cer = evaluate(model, features, valid_loader, vocab, device)
+        valid_wer, valid_cer = evaluate(model, features, valid_loader, vocab, device, args.max_valid_batches)
         train_loss = train_loss_sum / max(train_steps, 1)
         epoch_metrics = {
             "epoch": epoch + 1,
