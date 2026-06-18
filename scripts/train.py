@@ -217,6 +217,8 @@ def main() -> None:
                         f"min={torch.nan_to_num(logits.detach()).min().item():.4f} "
                         f"max={torch.nan_to_num(logits.detach()).max().item():.4f}"
                     )
+                    if args.max_train_batches is not None and step >= args.max_train_batches:
+                        break
                     continue
                 keep_mask = output_lengths >= label_lengths
                 if not bool(keep_mask.any()):
@@ -225,12 +227,14 @@ def main() -> None:
                         f"output_lengths={output_lengths.detach().cpu().tolist()} "
                         f"label_lengths={label_lengths.detach().cpu().tolist()}"
                     )
+                    if args.max_train_batches is not None and step >= args.max_train_batches:
+                        break
                     continue
                 if not bool(keep_mask.all()):
                     logits = logits[keep_mask]
                     output_lengths = output_lengths[keep_mask]
                     labels, label_lengths = select_ctc_targets(labels, label_lengths, keep_mask)
-                log_probs = logits.float().log_softmax(dim=-1).transpose(0, 1)
+                log_probs = logits.float().log_softmax(dim=-1).clamp(min=-30).transpose(0, 1)
                 loss = criterion(log_probs, labels, output_lengths, label_lengths)
 
             if not torch.isfinite(loss):
@@ -240,6 +244,8 @@ def main() -> None:
                     f"output_lengths={output_lengths.detach().cpu().tolist()} "
                     f"label_lengths={label_lengths.detach().cpu().tolist()}"
                 )
+                if args.max_train_batches is not None and step >= args.max_train_batches:
+                    break
                 continue
 
             optimizer.zero_grad(set_to_none=True)
