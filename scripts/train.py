@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 import traceback
 from pathlib import Path
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:

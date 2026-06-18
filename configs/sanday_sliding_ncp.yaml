@@ -49,7 +49,7 @@ model:
 
 training:
   epochs: 60
-  batch_size: 16
+  batch_size: 8
   learning_rate: 0.0008
   weight_decay: 0.00001
   optimizer: adamw
@@ -57,7 +57,7 @@ training:
   pct_start: 0.1
   grad_clip: 1.0
   num_workers: 2
-  mixed_precision: false
+  mixed_precision: true
 
 augmentation:
   specaugment: true
