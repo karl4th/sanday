@@ -12,13 +12,6 @@ from jiwer import cer, wer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from sanday.data import CommonVoiceDataset, collate_common_voice
-from sanday.features import LogMelSpectrogram
-from sanday.model import build_sanday_model
-from sanday.reporting import collect_environment, default_run_dir, write_config_snapshot, write_json
-from sanday.reproducibility import seed_everything
-from sanday.text import CharacterVocabulary, normalize_text
-
 
 def load_config(path: str | Path) -> dict:
     with open(path, "r", encoding="utf-8") as handle:
@@ -34,6 +27,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def prepare_run(args: argparse.Namespace) -> tuple[dict, Path, str]:
+    from sanday.reporting import default_run_dir
+
     config = load_config(args.config)
     variant = config["model"].get("variant", "cfc")
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(args.config, f"{variant}_eval")
@@ -42,6 +37,13 @@ def prepare_run(args: argparse.Namespace) -> tuple[dict, Path, str]:
 
 
 def main() -> None:
+    from sanday.data import CommonVoiceDataset, collate_common_voice
+    from sanday.features import LogMelSpectrogram
+    from sanday.model import build_sanday_model
+    from sanday.reporting import collect_environment, write_config_snapshot, write_json
+    from sanday.reproducibility import seed_everything
+    from sanday.text import CharacterVocabulary, normalize_text
+
     args = parse_args()
     config, run_dir, variant = prepare_run(args)
     seed_everything(config["project"].get("seed", 42), config["project"].get("deterministic", True))

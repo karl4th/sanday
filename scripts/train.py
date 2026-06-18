@@ -12,21 +12,6 @@ from jiwer import cer, wer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from sanday.data import CommonVoiceDataset, collate_common_voice
-from sanday.features import LogMelSpectrogram, SpecAugment
-from sanday.model import build_sanday_model, count_parameters
-from sanday.reporting import (
-    append_csv,
-    append_jsonl,
-    collect_environment,
-    default_run_dir,
-    write_config_snapshot,
-    write_json,
-)
-from sanday.reproducibility import seed_everything
-from sanday.text import CharacterVocabulary
-from sanday.text import normalize_text
-
 
 def load_config(path: str | Path) -> dict:
     with open(path, "r", encoding="utf-8") as handle:
@@ -44,6 +29,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def prepare_run(args: argparse.Namespace) -> tuple[dict, Path, str]:
+    from sanday.reporting import default_run_dir
+
     config = load_config(args.config)
     variant = config["model"].get("variant", "cfc")
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(args.config, variant)
@@ -61,6 +48,8 @@ def decode_batch(model, features, vocab, waveforms, waveform_lengths, device):
 
 
 def evaluate(model, feature_extractor, loader, vocab, device, max_batches: int | None = None) -> tuple[float, float]:
+    from sanday.text import normalize_text
+
     model.eval()
     references: list[str] = []
     predictions: list[str] = []
@@ -84,6 +73,13 @@ def evaluate(model, feature_extractor, loader, vocab, device, max_batches: int |
 
 
 def main() -> None:
+    from sanday.data import CommonVoiceDataset, collate_common_voice
+    from sanday.features import LogMelSpectrogram, SpecAugment
+    from sanday.model import build_sanday_model, count_parameters
+    from sanday.reporting import append_csv, append_jsonl, collect_environment, write_config_snapshot, write_json
+    from sanday.reproducibility import seed_everything
+    from sanday.text import CharacterVocabulary
+
     args = parse_args()
     config, run_dir, variant = prepare_run(args)
     seed_everything(config["project"].get("seed", 42), config["project"].get("deterministic", True))
