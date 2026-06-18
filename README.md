@@ -56,6 +56,7 @@ stronger acoustic stack:
 configs/
   sanday_cfc_2m.yaml       Experiment configuration
   sanday_hybrid_v2.yaml    Hybrid CfC/Transformer experiment configuration
+  sanday_sliding_ncp.yaml  Sliding-window CNN and AutoNCP CfC configuration
 docs/
   abstract.md              Research abstract
   architecture.md          Model design notes
@@ -93,6 +94,12 @@ Hybrid v2:
 
 ```bash
 python scripts/train.py --config configs/sanday_hybrid_v2.yaml
+```
+
+Sliding-window AutoNCP:
+
+```bash
+python scripts/train.py --config configs/sanday_sliding_ncp.yaml
 ```
 
 The default configuration uses seed `42` and saves both per-epoch

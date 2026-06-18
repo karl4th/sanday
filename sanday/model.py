@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import math
+
 import torch
 from ncps.torch import CfC
+from ncps.wirings import AutoNCP, FullyConnected
 
 
 class SandayCfCCTC(torch.nn.Module):
@@ -199,6 +202,206 @@ class SandayHybridCfCTransformerCTC(torch.nn.Module):
         return self.classifier(x), input_lengths
 
 
+class SlidingWindowCNN(torch.nn.Module):
+    """Apply a small 2D CNN to overlapping log-mel windows."""
+
+    def __init__(
+        self,
+        n_mels: int = 80,
+        window_frames: int = 32,
+        window_stride: int = 8,
+        out_dim: int = 256,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.window_frames = window_frames
+        self.window_stride = window_stride
+
+        self.cnn = torch.nn.Sequential(
+            torch.nn.Conv2d(1, 32, kernel_size=(3, 3), padding=1, bias=False),
+            torch.nn.BatchNorm2d(32),
+            torch.nn.GELU(),
+            torch.nn.Conv2d(32, 64, kernel_size=(3, 3), stride=(2, 2), padding=1, bias=False),
+            torch.nn.BatchNorm2d(64),
+            torch.nn.GELU(),
+            torch.nn.Conv2d(64, 128, kernel_size=(3, 3), stride=(2, 2), padding=1, bias=False),
+            torch.nn.BatchNorm2d(128),
+            torch.nn.GELU(),
+        )
+
+        h_out = math.ceil(window_frames / 4)
+        w_out = math.ceil(n_mels / 4)
+        flat_dim = 128 * h_out * w_out
+        self.proj = torch.nn.Sequential(
+            torch.nn.Linear(flat_dim, out_dim, bias=False),
+            torch.nn.LayerNorm(out_dim),
+            torch.nn.Dropout(dropout),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        batch, time, n_mels = features.shape
+        if time < self.window_frames:
+            features = torch.nn.functional.pad(features, (0, 0, 0, self.window_frames - time))
+            time = self.window_frames
+
+        windows = features.unfold(1, self.window_frames, self.window_stride)
+        steps = windows.size(1)
+        x = windows.permute(0, 1, 3, 2).contiguous()
+        x = x.view(batch * steps, 1, self.window_frames, n_mels)
+        x = self.cnn(x)
+        x = self.proj(x.flatten(1))
+        return x.view(batch, steps, -1)
+
+    def output_lengths(self, input_lengths: torch.Tensor) -> torch.Tensor:
+        lengths = input_lengths.clamp(min=self.window_frames)
+        lengths = torch.div(lengths - self.window_frames, self.window_stride, rounding_mode="floor") + 1
+        return lengths.clamp(min=1)
+
+
+class CfCResidualLayer(torch.nn.Module):
+    """CfC layer with optional AutoNCP wiring, residual projection, norm, and dropout."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int,
+        dropout: float = 0.1,
+        mode: str = "default",
+        use_ncp: bool = True,
+        ncp_ratio: int = 2,
+        mixed_memory: bool = False,
+    ) -> None:
+        super().__init__()
+        if use_ncp:
+            wiring = AutoNCP(hidden_dim * ncp_ratio, hidden_dim)
+        else:
+            wiring = FullyConnected(hidden_dim, hidden_dim)
+
+        self.cfc = CfC(
+            in_dim,
+            wiring,
+            mode=mode,
+            mixed_memory=mixed_memory,
+            batch_first=True,
+            return_sequences=True,
+        )
+        self.skip = torch.nn.Linear(in_dim, hidden_dim, bias=False) if in_dim != hidden_dim else torch.nn.Identity()
+        self.norm = torch.nn.LayerNorm(hidden_dim)
+        self.dropout = torch.nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, hx: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        residual = self.skip(x)
+        output = self.cfc(x, hx=hx)
+        if isinstance(output, tuple):
+            out, hx = output
+        else:
+            out, hx = output, None
+        out = self.dropout(out)
+        return self.norm(out + residual), hx
+
+
+class CfCResidualEncoder(torch.nn.Module):
+    """Stack of residual CfC layers. Hidden states can be reused for streaming."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        num_layers: int = 4,
+        dropout: float = 0.1,
+        mode: str = "default",
+        use_ncp: bool = True,
+        ncp_ratio: int = 2,
+        mixed_memory: bool = False,
+    ) -> None:
+        super().__init__()
+        dims = [input_dim, *([hidden_dim] * num_layers)]
+        self.layers = torch.nn.ModuleList(
+            [
+                CfCResidualLayer(
+                    in_dim=dims[index],
+                    hidden_dim=dims[index + 1],
+                    dropout=dropout,
+                    mode=mode,
+                    use_ncp=use_ncp,
+                    ncp_ratio=ncp_ratio,
+                    mixed_memory=mixed_memory,
+                )
+                for index in range(num_layers)
+            ]
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        hx_list: list[torch.Tensor | None] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor | None]]:
+        if hx_list is None:
+            hx_list = [None] * len(self.layers)
+
+        new_hx = []
+        for layer, hx in zip(self.layers, hx_list):
+            x, next_hx = layer(x, hx)
+            new_hx.append(next_hx)
+        return x, new_hx
+
+
+class SandaySlidingNCPCTC(torch.nn.Module):
+    """Sliding-window CNN plus residual AutoNCP CfC encoder for CTC ASR."""
+
+    def __init__(
+        self,
+        n_mels: int,
+        vocab_size: int,
+        window_frames: int = 32,
+        window_stride: int = 8,
+        cnn_dim: int = 256,
+        hidden_dim: int = 256,
+        cfc_layers: int = 4,
+        dropout: float = 0.1,
+        ctc_dropout: float = 0.1,
+        mode: str = "default",
+        use_ncp: bool = True,
+        ncp_ratio: int = 2,
+        mixed_memory: bool = False,
+    ) -> None:
+        super().__init__()
+        self.window = SlidingWindowCNN(
+            n_mels=n_mels,
+            window_frames=window_frames,
+            window_stride=window_stride,
+            out_dim=cnn_dim,
+            dropout=dropout,
+        )
+        self.encoder = CfCResidualEncoder(
+            input_dim=cnn_dim,
+            hidden_dim=hidden_dim,
+            num_layers=cfc_layers,
+            dropout=dropout,
+            mode=mode,
+            use_ncp=use_ncp,
+            ncp_ratio=ncp_ratio,
+            mixed_memory=mixed_memory,
+        )
+        self.head = torch.nn.Sequential(
+            torch.nn.Dropout(ctc_dropout),
+            torch.nn.Linear(hidden_dim, vocab_size),
+        )
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        input_lengths: torch.Tensor | None = None,
+        hx_list: list[torch.Tensor | None] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        x = self.window(features)
+        if input_lengths is not None:
+            input_lengths = self.window.output_lengths(input_lengths)
+
+        x, _ = self.encoder(x, hx_list)
+        return self.head(x), input_lengths
+
+
 def build_sanday_model(config: dict, vocab_size: int) -> torch.nn.Module:
     model_config = {
         key: value
@@ -214,6 +417,12 @@ def build_sanday_model(config: dict, vocab_size: int) -> torch.nn.Module:
         )
     if variant == "hybrid_v2":
         return SandayHybridCfCTransformerCTC(
+            n_mels=config["features"]["n_mels"],
+            vocab_size=vocab_size,
+            **model_config,
+        )
+    if variant == "sliding_ncp":
+        return SandaySlidingNCPCTC(
             n_mels=config["features"]["n_mels"],
             vocab_size=vocab_size,
             **model_config,

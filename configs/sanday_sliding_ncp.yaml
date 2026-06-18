@@ -1,7 +1,7 @@
 project:
   name: sanday
   team: Manifestro
-  description: Liquid/CfC acoustic ASR model without external LM
+  description: Sliding-window CNN and AutoNCP CfC acoustic ASR model without external LM
   seed: 42
   deterministic: true
 
@@ -21,11 +21,11 @@ data:
 
 features:
   n_mels: 80
-  n_fft: 400
+  n_fft: 512
   hop_length: 160
   win_length: 400
-  f_min: 0
-  f_max: 8000
+  f_min: 80
+  f_max: 7600
 
 vocab:
   type: character
@@ -33,17 +33,24 @@ vocab:
   alphabet: "abcdefghijklmnopqrstuvwxyz '"
 
 model:
-  conv_channels: 96
-  conv_stride: 2
-  cfc_hidden_size: 256
-  cfc_layers: 3
+  variant: sliding_ncp
+  window_frames: 32
+  window_stride: 8
+  cnn_dim: 256
+  hidden_dim: 256
+  cfc_layers: 4
   dropout: 0.1
+  ctc_dropout: 0.1
+  mode: default
+  use_ncp: true
+  ncp_ratio: 2
+  mixed_memory: false
   target_parameters: 2000000
 
 training:
-  epochs: 50
+  epochs: 60
   batch_size: 16
-  learning_rate: 0.001
+  learning_rate: 0.0008
   weight_decay: 0.00001
   optimizer: adamw
   scheduler: onecycle
@@ -55,7 +62,7 @@ training:
 augmentation:
   specaugment: true
   time_masks: 2
-  time_width: 40
+  time_width: 32
   freq_masks: 2
   freq_width: 12
 
@@ -69,5 +76,5 @@ evaluation:
     - cer
 
 logging:
-  checkpoint_dir: checkpoints
+  checkpoint_dir: checkpoints/sliding_ncp
   log_every_steps: 50

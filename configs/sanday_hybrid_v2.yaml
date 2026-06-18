@@ -13,6 +13,9 @@ data:
   train_manifest: train.tsv
   valid_manifest: dev.tsv
   test_manifest: test.tsv
+  fallback_manifest: validated.tsv
+  train_ratio: 0.9
+  valid_ratio: 0.05
   audio_column: path
   text_column: sentence
 

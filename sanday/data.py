@@ -21,9 +21,14 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         sample_rate: int = 16_000,
         audio_column: str = "path",
         text_column: str = "sentence",
+        split: str | None = None,
+        split_seed: int = 42,
+        train_ratio: float = 0.9,
+        valid_ratio: float = 0.05,
     ) -> None:
         self.root = Path(root)
-        self.manifest_path = self._resolve_manifest(Path(manifest))
+        requested_manifest = Path(manifest)
+        self.manifest_path = self._resolve_manifest(requested_manifest)
         self.vocab = vocab
         self.sample_rate = sample_rate
         self.audio_column = audio_column
@@ -32,15 +37,63 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         self.table = self.table.dropna(subset=[self.audio_column, self.text_column]).copy()
         self.table["_normalized_text"] = self.table[self.text_column].map(lambda value: normalize_text(str(value)))
         self.table = self.table[self.table["_normalized_text"].str.len() > 0].reset_index(drop=True)
+        inferred_split = split or self._infer_split(requested_manifest)
+        if requested_manifest.name != self.manifest_path.name and self.manifest_path.name == "validated.tsv":
+            self.table = self._split_table(inferred_split, split_seed, train_ratio, valid_ratio)
+        print(
+            f"CommonVoiceDataset split={inferred_split} manifest={self.manifest_path} "
+            f"rows={len(self.table)}"
+        )
 
     def _resolve_manifest(self, manifest: Path) -> Path:
         candidate = self.root / manifest
         if candidate.exists():
             return candidate
         matches = list(self.root.rglob(manifest.name))
+        if not matches and manifest.name in {"train.tsv", "dev.tsv", "valid.tsv", "test.tsv"}:
+            matches = self._validated_manifest_matches()
         if not matches:
-            raise FileNotFoundError(f"Could not find manifest {manifest} under {self.root}")
+            available = sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*.tsv"))[:30]
+            raise FileNotFoundError(
+                f"Could not find manifest {manifest} under {self.root}. "
+                f"Available TSV examples: {available}"
+            )
         return matches[0]
+
+    def _validated_manifest_matches(self) -> list[Path]:
+        matches = [
+            path
+            for path in self.root.rglob("validated.tsv")
+            if "/English/" in path.as_posix() or "/en/" in path.as_posix()
+        ]
+        return sorted(matches, key=lambda path: (len(path.parts), str(path)))
+
+    @staticmethod
+    def _infer_split(manifest: Path) -> str:
+        name = manifest.name
+        if name == "dev.tsv" or name == "valid.tsv":
+            return "valid"
+        if name == "test.tsv":
+            return "test"
+        return "train"
+
+    def _split_table(
+        self,
+        split: str,
+        split_seed: int,
+        train_ratio: float,
+        valid_ratio: float,
+    ) -> pd.DataFrame:
+        table = self.table.sample(frac=1.0, random_state=split_seed).reset_index(drop=True)
+        train_end = int(len(table) * train_ratio)
+        valid_end = train_end + int(len(table) * valid_ratio)
+        if split == "train":
+            return table.iloc[:train_end].reset_index(drop=True)
+        if split == "valid":
+            return table.iloc[train_end:valid_end].reset_index(drop=True)
+        if split == "test":
+            return table.iloc[valid_end:].reset_index(drop=True)
+        raise ValueError(f"Unknown split: {split}")
 
     def _resolve_audio(self, value: str) -> Path:
         relative = Path(value)

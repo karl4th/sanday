@@ -55,6 +55,10 @@ def main() -> None:
         sample_rate=config["data"]["sample_rate"],
         audio_column=config["data"]["audio_column"],
         text_column=config["data"]["text_column"],
+        split="test",
+        split_seed=config["project"].get("seed", 42),
+        train_ratio=config["data"].get("train_ratio", 0.9),
+        valid_ratio=config["data"].get("valid_ratio", 0.05),
     )
     test_loader = DataLoader(
         test_dataset,
