@@ -65,8 +65,7 @@ references/
   project_notes.md         Project facts and open questions
 sanday/
   features.py              Mel spectrogram extraction
-  model.py                 CfC CTC acoustic model
-  model_v2.py              Hybrid CfC/Transformer CTC acoustic model
+  model.py                 ASR model variants and model factory
   text.py                  Character vocabulary and CTC helpers
   data.py                  Common Voice dataset loader skeleton
 scripts/
@@ -90,17 +89,44 @@ pip install torch torchaudio ncps kagglehub pandas jiwer pyyaml tqdm
 python scripts/train.py --config configs/sanday_cfc_2m.yaml
 ```
 
+Hybrid v2:
+
+```bash
+python scripts/train.py --config configs/sanday_hybrid_v2.yaml
+```
+
 The default configuration uses seed `42` and saves both per-epoch
 checkpoints and the best validation-WER checkpoint:
 
 ```text
-checkpoints/sanday_best.pt
+results/<run-id>/checkpoints/sanday_best.pt
+```
+
+Each run also writes small readable artifacts:
+
+```text
+results/<run-id>/
+  config.yaml
+  environment.json
+  metrics.csv
+  metrics.jsonl
+  summary.json
 ```
 
 ## Evaluation
 
 ```bash
-python scripts/evaluate.py --config configs/sanday_cfc_2m.yaml --checkpoint path/to/checkpoint.pt
+python scripts/evaluate.py --config configs/sanday_cfc_2m.yaml --checkpoint results/<run-id>/checkpoints/sanday_best.pt
+```
+
+Evaluation writes:
+
+```text
+results/<eval-run-id>/
+  config.yaml
+  environment.json
+  evaluation.json
+  predictions.csv
 ```
 
 ## Research Positioning

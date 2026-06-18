@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 import kagglehub
@@ -12,8 +13,15 @@ from tqdm import tqdm
 
 from sanday.data import CommonVoiceDataset, collate_common_voice
 from sanday.features import LogMelSpectrogram, SpecAugment
-from sanday.model import SandayCfCCTC, count_parameters
-from sanday.model_v2 import SandayHybridCfCTransformerCTC
+from sanday.model import build_sanday_model, count_parameters
+from sanday.reporting import (
+    append_csv,
+    append_jsonl,
+    collect_environment,
+    default_run_dir,
+    write_config_snapshot,
+    write_json,
+)
 from sanday.reproducibility import seed_everything
 from sanday.text import CharacterVocabulary
 from sanday.text import normalize_text
@@ -54,36 +62,20 @@ def evaluate(model, feature_extractor, loader, vocab, device) -> tuple[float, fl
     return wer(references, predictions), cer(references, predictions)
 
 
-def build_model(config: dict, vocab_size: int) -> torch.nn.Module:
-    model_config = {
-        key: value
-        for key, value in config["model"].items()
-        if key not in {"target_parameters", "variant"}
-    }
-    variant = config["model"].get("variant", "cfc")
-    if variant == "hybrid_v2":
-        return SandayHybridCfCTransformerCTC(
-            n_mels=config["features"]["n_mels"],
-            vocab_size=vocab_size,
-            **model_config,
-        )
-    if variant == "cfc":
-        return SandayCfCCTC(
-            n_mels=config["features"]["n_mels"],
-            vocab_size=vocab_size,
-            **model_config,
-        )
-    raise ValueError(f"Unknown model variant: {variant}")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train Sanday CfC CTC ASR model")
     parser.add_argument("--config", default="configs/sanday_cfc_2m.yaml")
+    parser.add_argument("--run-dir", default=None)
     args = parser.parse_args()
 
     config = load_config(args.config)
     seed_everything(config["project"].get("seed", 42), config["project"].get("deterministic", True))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    variant = config["model"].get("variant", "cfc")
+    run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(args.config, variant)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    write_config_snapshot(run_dir / "config.yaml", config)
+    write_json(run_dir / "environment.json", collect_environment())
 
     dataset_root = kagglehub.dataset_download(config["data"]["dataset"])
     vocab = CharacterVocabulary(config["vocab"]["alphabet"])
@@ -96,9 +88,10 @@ def main() -> None:
             freq_masks=config["augmentation"]["freq_masks"],
             freq_width=config["augmentation"]["freq_width"],
         ).to(device)
-    model = build_model(config, len(vocab)).to(device)
+    model = build_sanday_model(config, len(vocab)).to(device)
 
     print(f"Dataset root: {dataset_root}")
+    print(f"Run dir: {run_dir}")
     print(f"Seed: {config['project'].get('seed', 42)}")
     print(f"Trainable parameters: {count_parameters(model):,}")
 
@@ -152,14 +145,19 @@ def main() -> None:
             pct_start=config["training"].get("pct_start", 0.1),
         )
 
-    checkpoint_dir = Path(config["logging"]["checkpoint_dir"])
+    checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     scaler = torch.cuda.amp.GradScaler(enabled=config["training"].get("mixed_precision", False) and device.type == "cuda")
     best_wer = float("inf")
+    best_epoch = 0
+    started_at = time.time()
     model.train()
     for epoch in range(config["training"]["epochs"]):
+        epoch_started_at = time.time()
         progress = tqdm(train_loader, desc=f"epoch {epoch + 1}")
+        train_loss_sum = 0.0
+        train_steps = 0
         for step, batch in enumerate(progress, start=1):
             waveforms = batch["waveforms"].to(device)
             labels = batch["labels"].to(device)
@@ -184,10 +182,26 @@ def main() -> None:
             if scheduler is not None:
                 scheduler.step()
 
+            train_loss_sum += float(loss.item())
+            train_steps += 1
             progress.set_postfix(loss=f"{loss.item():.4f}")
 
         valid_wer, valid_cer = evaluate(model, features, valid_loader, vocab, device)
-        print(f"epoch={epoch + 1} valid_wer={valid_wer:.4f} valid_cer={valid_cer:.4f}")
+        train_loss = train_loss_sum / max(train_steps, 1)
+        epoch_metrics = {
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "valid_wer": valid_wer,
+            "valid_cer": valid_cer,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+            "seconds": time.time() - epoch_started_at,
+        }
+        print(
+            f"epoch={epoch + 1} train_loss={train_loss:.4f} "
+            f"valid_wer={valid_wer:.4f} valid_cer={valid_cer:.4f}"
+        )
+        append_jsonl(run_dir / "metrics.jsonl", epoch_metrics)
+        append_csv(run_dir / "metrics.csv", epoch_metrics)
         checkpoint_path = checkpoint_dir / f"sanday_epoch_{epoch + 1}.pt"
         payload = {
             "model": model.state_dict(),
@@ -196,11 +210,31 @@ def main() -> None:
             "valid_wer": valid_wer,
             "valid_cer": valid_cer,
             "parameters": count_parameters(model),
+            "run_dir": str(run_dir),
         }
         torch.save(payload, checkpoint_path)
         if valid_wer < best_wer:
             best_wer = valid_wer
+            best_epoch = epoch + 1
             torch.save(payload, checkpoint_dir / "sanday_best.pt")
+
+        write_json(
+            run_dir / "summary.json",
+            {
+                "config": str(args.config),
+                "variant": variant,
+                "seed": config["project"].get("seed", 42),
+                "parameters": count_parameters(model),
+                "best_epoch": best_epoch,
+                "best_valid_wer": best_wer,
+                "last_valid_wer": valid_wer,
+                "last_valid_cer": valid_cer,
+                "epochs_completed": epoch + 1,
+                "checkpoint_dir": str(checkpoint_dir),
+                "best_checkpoint": str(checkpoint_dir / "sanday_best.pt"),
+                "elapsed_seconds": time.time() - started_at,
+            },
+        )
 
 
 if __name__ == "__main__":

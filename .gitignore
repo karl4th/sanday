@@ -30,13 +30,15 @@ datasets/
 common_voice/
 CommonVoice/
 checkpoints/
-runs/
 wandb/
 mlruns/
 *.ckpt
 *.pt
 *.pth
 *.onnx
+
+# Local experiment folders can contain small metrics plus large generated files.
+results/**/checkpoints/
 
 # Kaggle
 kaggle.json
