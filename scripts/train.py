@@ -191,7 +191,8 @@ def main() -> None:
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=config["training"].get("mixed_precision", False) and device.type == "cuda")
+    use_amp = config["training"].get("mixed_precision", False) and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     best_wer = float("inf")
     best_epoch = 0
     started_at = time.time()
@@ -207,7 +208,7 @@ def main() -> None:
             label_lengths = batch["label_lengths"].to(device)
             waveform_lengths = batch["waveform_lengths"].to(device)
 
-            with torch.cuda.amp.autocast(enabled=scaler.is_enabled()):
+            with torch.amp.autocast("cuda", enabled=scaler.is_enabled()):
                 mel = features(waveforms)
                 input_lengths = features.output_lengths(waveform_lengths)
                 if augment is not None:

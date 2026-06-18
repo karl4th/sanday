@@ -3,7 +3,7 @@ project:
   team: Manifestro
   description: Sliding-window CNN and AutoNCP CfC acoustic ASR model without external LM
   seed: 42
-  deterministic: true
+  deterministic: false
 
 data:
   source: kagglehub
@@ -57,7 +57,7 @@ training:
   pct_start: 0.1
   grad_clip: 1.0
   num_workers: 2
-  mixed_precision: true
+  mixed_precision: false
 
 augmentation:
   specaugment: true
