@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
+import traceback
 from pathlib import Path
 
 import kagglehub
@@ -30,6 +31,21 @@ from sanday.text import normalize_text
 def load_config(path: str | Path) -> dict:
     with open(path, "r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train Sanday CfC CTC ASR model")
+    parser.add_argument("--config", default="configs/sanday_cfc_2m.yaml")
+    parser.add_argument("--run-dir", default=None)
+    return parser.parse_args()
+
+
+def prepare_run(args: argparse.Namespace) -> tuple[dict, Path, str]:
+    config = load_config(args.config)
+    variant = config["model"].get("variant", "cfc")
+    run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(args.config, variant)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return config, run_dir, variant
 
 
 def decode_batch(model, features, vocab, waveforms, waveform_lengths, device):
@@ -63,17 +79,10 @@ def evaluate(model, feature_extractor, loader, vocab, device) -> tuple[float, fl
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train Sanday CfC CTC ASR model")
-    parser.add_argument("--config", default="configs/sanday_cfc_2m.yaml")
-    parser.add_argument("--run-dir", default=None)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
+    args = parse_args()
+    config, run_dir, variant = prepare_run(args)
     seed_everything(config["project"].get("seed", 42), config["project"].get("deterministic", True))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    variant = config["model"].get("variant", "cfc")
-    run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(args.config, variant)
-    run_dir.mkdir(parents=True, exist_ok=True)
     write_config_snapshot(run_dir / "config.yaml", config)
     write_json(run_dir / "environment.json", collect_environment())
 
@@ -246,4 +255,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        args = parse_args()
+        try:
+            _, run_dir, _ = prepare_run(args)
+            error = traceback.format_exc()
+            (run_dir / "error.log").write_text(error, encoding="utf-8")
+            print(f"\nTraining failed. Full traceback written to: {run_dir / 'error.log'}")
+            print(error)
+        finally:
+            raise
