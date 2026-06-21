@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import wave
 
 import pandas as pd
 import torch
@@ -59,14 +60,21 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         keep: list[bool] = []
         for value in self.table[self.audio_column].astype(str):
             audio_path = self._resolve_audio(value)
-            info = torchaudio.info(audio_path)
-            duration = info.num_frames / info.sample_rate
+            duration = self._audio_duration_seconds(audio_path)
             keep.append(duration <= max_audio_seconds)
         filtered = self.table[keep].copy()
         dropped = len(self.table) - len(filtered)
         if dropped:
             print(f"Dropped {dropped} examples longer than {max_audio_seconds:.1f}s")
         return filtered
+
+    @staticmethod
+    def _audio_duration_seconds(path: Path) -> float:
+        if path.suffix.lower() == ".wav":
+            with wave.open(str(path), "rb") as handle:
+                return handle.getnframes() / handle.getframerate()
+        waveform, sample_rate = torchaudio.load(path)
+        return waveform.shape[-1] / sample_rate
 
     def _resolve_manifest(self, manifest: Path) -> Path:
         candidate = self.root / manifest
