@@ -108,7 +108,7 @@ def evaluate(model, feature_extractor, loader, vocab, device, max_batches: int |
 def main() -> None:
     from sanday.data import CommonVoiceDataset, collate_common_voice
     from sanday.features import LogMelSpectrogram, SpecAugment
-    from sanday.model import build_sanday_model, count_parameters
+    from sanday.model import build_sanday_model, count_parameters, count_total_parameters
     from sanday.reporting import append_csv, append_jsonl, collect_environment, write_config_snapshot, write_json
     from sanday.reproducibility import seed_everything
     from sanday.text import CharacterVocabulary
@@ -139,7 +139,10 @@ def main() -> None:
     print(f"Dataset root: {dataset_root}")
     print(f"Run dir: {run_dir}")
     print(f"Seed: {config['project'].get('seed', 42)}")
-    print(f"Trainable parameters: {count_parameters(model):,}")
+    trainable_parameters = count_parameters(model)
+    total_parameters = count_total_parameters(model)
+    print(f"Trainable parameters: {trainable_parameters:,}")
+    print(f"Total parameters: {total_parameters:,}")
 
     train_dataset = CommonVoiceDataset(
         root=dataset_root,
@@ -212,17 +215,28 @@ def main() -> None:
     best_wer = float("inf")
     best_epoch = 0
     started_at = time.time()
+    log_every_steps = config.get("logging", {}).get("log_every_steps", 50)
+    show_progress_bar = sys.stdout.isatty()
     model.train()
     for epoch in range(epochs):
         epoch_started_at = time.time()
-        progress = tqdm(train_loader, desc=f"epoch {epoch + 1}")
+        progress = tqdm(
+            train_loader,
+            desc=f"epoch {epoch + 1}/{epochs}",
+            dynamic_ncols=True,
+            mininterval=1.0,
+            leave=False,
+            disable=not show_progress_bar,
+        )
         train_loss_sum = 0.0
         train_steps = 0
+        skipped_steps = 0
         for step, batch in enumerate(progress, start=1):
             waveforms = batch["waveforms"].to(device)
             labels = batch["labels"].to(device)
             label_lengths = batch["label_lengths"].to(device)
             waveform_lengths = batch["waveform_lengths"].to(device)
+            kept_examples = int(waveforms.size(0))
 
             with torch.amp.autocast("cuda", enabled=scaler.is_enabled()):
                 mel = features(waveforms)
@@ -231,26 +245,18 @@ def main() -> None:
                     mel = augment(mel)
                 logits, output_lengths = model(mel, input_lengths)
                 if not torch.isfinite(logits).all():
-                    print(
-                        "Skipping batch: non-finite logits "
-                        f"finite_ratio={torch.isfinite(logits).float().mean().item():.4f} "
-                        f"min={torch.nan_to_num(logits.detach()).min().item():.4f} "
-                        f"max={torch.nan_to_num(logits.detach()).max().item():.4f}"
-                    )
+                    skipped_steps += 1
                     if args.max_train_batches is not None and step >= args.max_train_batches:
                         break
                     continue
                 keep_mask = output_lengths >= label_lengths
                 if not bool(keep_mask.any()):
-                    print(
-                        "Skipping batch: all CTC targets are longer than model outputs "
-                        f"output_lengths={output_lengths.detach().cpu().tolist()} "
-                        f"label_lengths={label_lengths.detach().cpu().tolist()}"
-                    )
+                    skipped_steps += 1
                     if args.max_train_batches is not None and step >= args.max_train_batches:
                         break
                     continue
                 if not bool(keep_mask.all()):
+                    kept_examples = int(keep_mask.sum().item())
                     logits = logits[keep_mask]
                     output_lengths = output_lengths[keep_mask]
                     labels, label_lengths = select_ctc_targets(labels, label_lengths, keep_mask)
@@ -258,12 +264,7 @@ def main() -> None:
                 loss = criterion(log_probs, labels, output_lengths, label_lengths)
 
             if not torch.isfinite(loss):
-                print(
-                    "Skipping batch: non-finite CTC loss "
-                    f"loss={loss.item()} "
-                    f"output_lengths={output_lengths.detach().cpu().tolist()} "
-                    f"label_lengths={label_lengths.detach().cpu().tolist()}"
-                )
+                skipped_steps += 1
                 if args.max_train_batches is not None and step >= args.max_train_batches:
                     break
                 continue
@@ -271,7 +272,7 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config["training"]["grad_clip"])
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["training"]["grad_clip"])
             scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
@@ -282,7 +283,25 @@ def main() -> None:
 
             train_loss_sum += float(loss.item())
             train_steps += 1
-            progress.set_postfix(loss=f"{loss.item():.4f}")
+            avg_loss = train_loss_sum / train_steps
+            lr = optimizer.param_groups[0]["lr"]
+            progress_stats = {
+                "loss": f"{loss.item():.4f}",
+                "avg": f"{avg_loss:.4f}",
+                "grad": f"{float(grad_norm):.2f}",
+                "lr": f"{lr:.2e}",
+                "kept": kept_examples,
+                "skip": skipped_steps,
+            }
+            progress.set_postfix(progress_stats)
+            if not show_progress_bar and (step == 1 or step % log_every_steps == 0):
+                print(
+                    f"epoch={epoch + 1}/{epochs} step={step}/{len(train_loader)} "
+                    f"loss={loss.item():.4f} avg_loss={avg_loss:.4f} "
+                    f"grad_norm={float(grad_norm):.2f} lr={lr:.2e} "
+                    f"kept={kept_examples}/{waveforms.size(0)} skipped={skipped_steps}",
+                    flush=True,
+                )
             if args.max_train_batches is not None and step >= args.max_train_batches:
                 break
 
@@ -309,7 +328,8 @@ def main() -> None:
             "epoch": epoch + 1,
             "valid_wer": valid_wer,
             "valid_cer": valid_cer,
-            "parameters": count_parameters(model),
+            "parameters": trainable_parameters,
+            "total_parameters": total_parameters,
             "run_dir": str(run_dir),
         }
         torch.save(payload, checkpoint_path)
@@ -324,7 +344,8 @@ def main() -> None:
                 "config": str(args.config),
                 "variant": variant,
                 "seed": config["project"].get("seed", 42),
-                "parameters": count_parameters(model),
+                "parameters": trainable_parameters,
+                "total_parameters": total_parameters,
                 "best_epoch": best_epoch,
                 "best_valid_wer": best_wer,
                 "last_valid_wer": valid_wer,

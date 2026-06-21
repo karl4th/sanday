@@ -432,3 +432,7 @@ def build_sanday_model(config: dict, vocab_size: int) -> torch.nn.Module:
 
 def count_parameters(model: torch.nn.Module) -> int:
     return sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+
+
+def count_total_parameters(model: torch.nn.Module) -> int:
+    return sum(parameter.numel() for parameter in model.parameters())
