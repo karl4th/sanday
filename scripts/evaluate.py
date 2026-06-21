@@ -41,6 +41,16 @@ def prepare_run(args: argparse.Namespace) -> tuple[dict, Path, str]:
     return config, run_dir, variant
 
 
+def resolve_dataset_root(config: dict) -> str | Path:
+    data_config = config["data"]
+    source = data_config.get("source", "kagglehub")
+    if source == "kagglehub":
+        return kagglehub.dataset_download(data_config["dataset"])
+    if source in {"local", "prepared"}:
+        return Path(data_config["root"])
+    raise ValueError(f"Unknown data source: {source}")
+
+
 def main() -> None:
     from sanday.data import CommonVoiceDataset, collate_common_voice
     from sanday.features import LogMelSpectrogram
@@ -56,7 +66,7 @@ def main() -> None:
     write_config_snapshot(run_dir / "config.yaml", config)
     write_json(run_dir / "environment.json", collect_environment())
 
-    dataset_root = kagglehub.dataset_download(config["data"]["dataset"])
+    dataset_root = resolve_dataset_root(config)
     vocab = CharacterVocabulary(config["vocab"]["alphabet"])
     features = LogMelSpectrogram(**config["features"], sample_rate=config["data"]["sample_rate"]).to(device)
     model = build_sanday_model(config, len(vocab)).to(device)
@@ -75,6 +85,7 @@ def main() -> None:
         split_seed=config["project"].get("seed", 42),
         train_ratio=config["data"].get("train_ratio", 0.9),
         valid_ratio=config["data"].get("valid_ratio", 0.05),
+        max_total_items=config["data"].get("max_items"),
     )
     test_loader = DataLoader(
         test_dataset,

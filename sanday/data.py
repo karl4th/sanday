@@ -25,6 +25,7 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         split_seed: int = 42,
         train_ratio: float = 0.9,
         valid_ratio: float = 0.05,
+        max_total_items: int | None = None,
         max_items: int | None = None,
     ) -> None:
         self.root = Path(root)
@@ -34,12 +35,15 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         self.sample_rate = sample_rate
         self.audio_column = audio_column
         self.text_column = text_column
-        self.table = pd.read_csv(self.manifest_path, sep="\t")
+        separator = "," if self.manifest_path.suffix.lower() == ".csv" else "\t"
+        self.table = pd.read_csv(self.manifest_path, sep=separator)
         self.table = self.table.dropna(subset=[self.audio_column, self.text_column]).copy()
         self.table["_normalized_text"] = self.table[self.text_column].map(lambda value: normalize_text(str(value)))
         self.table = self.table[self.table["_normalized_text"].str.len() > 0].reset_index(drop=True)
+        if max_total_items is not None and max_total_items < len(self.table):
+            self.table = self.table.sample(n=max_total_items, random_state=split_seed).reset_index(drop=True)
         inferred_split = split or self._infer_split(requested_manifest)
-        if requested_manifest.name != self.manifest_path.name and self.manifest_path.name == "validated.tsv":
+        if self._should_split_manifest(requested_manifest, self.manifest_path):
             self.table = self._split_table(inferred_split, split_seed, train_ratio, valid_ratio)
         if max_items is not None:
             self.table = self.table.head(max_items).reset_index(drop=True)
@@ -56,10 +60,14 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         if not matches and manifest.name in {"train.tsv", "dev.tsv", "valid.tsv", "test.tsv"}:
             matches = self._validated_manifest_matches()
         if not matches:
-            available = sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*.tsv"))[:30]
+            available = sorted(
+                str(path.relative_to(self.root))
+                for pattern in ("*.tsv", "*.csv")
+                for path in self.root.rglob(pattern)
+            )[:30]
             raise FileNotFoundError(
                 f"Could not find manifest {manifest} under {self.root}. "
-                f"Available TSV examples: {available}"
+                f"Available manifest examples: {available}"
             )
         return matches[0]
 
@@ -79,6 +87,13 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         if name == "test.tsv":
             return "test"
         return "train"
+
+    @staticmethod
+    def _should_split_manifest(requested_manifest: Path, resolved_manifest: Path) -> bool:
+        split_manifest_names = {"train.tsv", "dev.tsv", "valid.tsv", "test.tsv"}
+        if requested_manifest.name != resolved_manifest.name and resolved_manifest.name == "validated.tsv":
+            return True
+        return resolved_manifest.name not in split_manifest_names
 
     def _split_table(
         self,

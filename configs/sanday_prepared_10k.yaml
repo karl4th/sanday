@@ -1,0 +1,73 @@
+project:
+  name: sanday
+  team: Manifestro
+  description: Prepared English Common Voice WAV dataset, 10k examples, 80/10/10 split
+  seed: 42
+  deterministic: true
+
+data:
+  source: prepared
+  root: /content/dataset
+  language: en
+  sample_rate: 16000
+  train_manifest: metadata.csv
+  valid_manifest: metadata.csv
+  test_manifest: metadata.csv
+  max_items: 10000
+  train_ratio: 0.8
+  valid_ratio: 0.1
+  audio_column: file_name
+  text_column: text
+
+features:
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+  win_length: 400
+  f_min: 0
+  f_max: 8000
+
+vocab:
+  type: character
+  blank_id: 0
+  alphabet: "abcdefghijklmnopqrstuvwxyz '"
+
+model:
+  conv_channels: 96
+  conv_stride: 2
+  cfc_hidden_size: 256
+  cfc_layers: 3
+  dropout: 0.1
+  target_parameters: 2000000
+
+training:
+  epochs: 50
+  batch_size: 16
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  optimizer: adamw
+  scheduler: onecycle
+  pct_start: 0.1
+  grad_clip: 1.0
+  num_workers: 2
+  mixed_precision: true
+
+augmentation:
+  specaugment: true
+  time_masks: 2
+  time_width: 40
+  freq_masks: 2
+  freq_width: 12
+
+decoding:
+  mode: greedy_ctc
+  external_lm: false
+
+evaluation:
+  metrics:
+    - wer
+    - cer
+
+logging:
+  checkpoint_dir: checkpoints/prepared_10k
+  log_every_steps: 50

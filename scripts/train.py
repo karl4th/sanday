@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--max-train-batches", type=int, default=None)
     parser.add_argument("--max-valid-batches", type=int, default=None)
+    parser.add_argument("--max-items", type=int, default=None)
     parser.add_argument("--max-train-items", type=int, default=None)
     parser.add_argument("--max-valid-items", type=int, default=None)
     return parser.parse_args()
@@ -46,6 +47,16 @@ def prepare_run(args: argparse.Namespace) -> tuple[dict, Path, str]:
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(args.config, variant)
     run_dir.mkdir(parents=True, exist_ok=True)
     return config, run_dir, variant
+
+
+def resolve_dataset_root(config: dict) -> str | Path:
+    data_config = config["data"]
+    source = data_config.get("source", "kagglehub")
+    if source == "kagglehub":
+        return kagglehub.dataset_download(data_config["dataset"])
+    if source in {"local", "prepared"}:
+        return Path(data_config["root"])
+    raise ValueError(f"Unknown data source: {source}")
 
 
 def decode_batch(model, features, vocab, waveforms, waveform_lengths, device):
@@ -109,7 +120,10 @@ def main() -> None:
     write_config_snapshot(run_dir / "config.yaml", config)
     write_json(run_dir / "environment.json", collect_environment())
 
-    dataset_root = kagglehub.dataset_download(config["data"]["dataset"])
+    dataset_root = resolve_dataset_root(config)
+    max_total_items = args.max_items
+    if max_total_items is None:
+        max_total_items = config["data"].get("max_items")
     vocab = CharacterVocabulary(config["vocab"]["alphabet"])
     features = LogMelSpectrogram(**config["features"], sample_rate=config["data"]["sample_rate"]).to(device)
     augment = None
@@ -138,6 +152,7 @@ def main() -> None:
         split_seed=config["project"].get("seed", 42),
         train_ratio=config["data"].get("train_ratio", 0.9),
         valid_ratio=config["data"].get("valid_ratio", 0.05),
+        max_total_items=max_total_items,
         max_items=args.max_train_items,
     )
     valid_dataset = CommonVoiceDataset(
@@ -151,6 +166,7 @@ def main() -> None:
         split_seed=config["project"].get("seed", 42),
         train_ratio=config["data"].get("train_ratio", 0.9),
         valid_ratio=config["data"].get("valid_ratio", 0.05),
+        max_total_items=max_total_items,
         max_items=args.max_valid_items,
     )
     generator = torch.Generator()
