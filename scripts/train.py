@@ -156,6 +156,7 @@ def main() -> None:
         train_ratio=config["data"].get("train_ratio", 0.9),
         valid_ratio=config["data"].get("valid_ratio", 0.05),
         max_total_items=max_total_items,
+        max_audio_seconds=config["data"].get("max_audio_seconds"),
         max_items=args.max_train_items,
     )
     valid_dataset = CommonVoiceDataset(
@@ -170,6 +171,7 @@ def main() -> None:
         train_ratio=config["data"].get("train_ratio", 0.9),
         valid_ratio=config["data"].get("valid_ratio", 0.05),
         max_total_items=max_total_items,
+        max_audio_seconds=config["data"].get("max_audio_seconds"),
         max_items=args.max_valid_items,
     )
     generator = torch.Generator()

@@ -26,6 +26,7 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         train_ratio: float = 0.9,
         valid_ratio: float = 0.05,
         max_total_items: int | None = None,
+        max_audio_seconds: float | None = None,
         max_items: int | None = None,
     ) -> None:
         self.root = Path(root)
@@ -40,6 +41,8 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
         self.table = self.table.dropna(subset=[self.audio_column, self.text_column]).copy()
         self.table["_normalized_text"] = self.table[self.text_column].map(lambda value: normalize_text(str(value)))
         self.table = self.table[self.table["_normalized_text"].str.len() > 0].reset_index(drop=True)
+        if max_audio_seconds is not None:
+            self.table = self._filter_by_duration(max_audio_seconds).reset_index(drop=True)
         if max_total_items is not None and max_total_items < len(self.table):
             self.table = self.table.sample(n=max_total_items, random_state=split_seed).reset_index(drop=True)
         inferred_split = split or self._infer_split(requested_manifest)
@@ -51,6 +54,19 @@ class CommonVoiceDataset(Dataset[dict[str, Any]]):
             f"CommonVoiceDataset split={inferred_split} manifest={self.manifest_path} "
             f"rows={len(self.table)}"
         )
+
+    def _filter_by_duration(self, max_audio_seconds: float) -> pd.DataFrame:
+        keep: list[bool] = []
+        for value in self.table[self.audio_column].astype(str):
+            audio_path = self._resolve_audio(value)
+            info = torchaudio.info(audio_path)
+            duration = info.num_frames / info.sample_rate
+            keep.append(duration <= max_audio_seconds)
+        filtered = self.table[keep].copy()
+        dropped = len(self.table) - len(filtered)
+        if dropped:
+            print(f"Dropped {dropped} examples longer than {max_audio_seconds:.1f}s")
+        return filtered
 
     def _resolve_manifest(self, manifest: Path) -> Path:
         candidate = self.root / manifest

@@ -86,6 +86,7 @@ def main() -> None:
         train_ratio=config["data"].get("train_ratio", 0.9),
         valid_ratio=config["data"].get("valid_ratio", 0.05),
         max_total_items=config["data"].get("max_items"),
+        max_audio_seconds=config["data"].get("max_audio_seconds"),
     )
     test_loader = DataLoader(
         test_dataset,
